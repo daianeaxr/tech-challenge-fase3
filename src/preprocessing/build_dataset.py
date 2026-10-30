@@ -46,23 +46,31 @@ def _bool_para_int(serie: pd.Series) -> pd.Series:
 def socioeconomico(ano_limite: int) -> pd.DataFrame:
     """Ultimo dado de populacao e PIB disponivel ate ano_limite (inclusive).
     Usar so anos <= ano_limite evita usar informacao do futuro."""
-    pop = ler("populacao")
-    pib = ler("pib")
-    pop = pop[pop["ano"] <= ano_limite].sort_values("ano").groupby("id_municipio").tail(1)
-    pib = pib[pib["ano"] <= ano_limite].sort_values("ano").groupby("id_municipio").tail(1)
-
-    # populacao do mesmo ano do PIB para o PIB per capita
+    va_cols = ["va_agropecuaria", "va_industria", "va_servicos"]
     pop_all = ler("populacao")[["id_municipio", "ano", "populacao"]]
-    pib = pib.merge(pop_all, on=["id_municipio", "ano"], how="left")
-    pib["pib_per_capita"] = pib["pib"] * 1000 / pib["populacao"]  # PIB IBGE vem em R$ mil
-    va_total = pib[["va_agropecuaria", "va_industria", "va_servicos"]].sum(axis=1)
-    for setor in ("agropecuaria", "industria", "servicos"):
-        pib[f"part_{setor}"] = pib[f"va_{setor}"] / va_total.replace(0, np.nan)
+    pib = ler("pib")
+    for col in ["pib"] + va_cols:
+        pib[col] = pd.to_numeric(pib[col], errors="coerce").astype("float")
+    pib = pib[pib["ano"] <= ano_limite]
 
-    saida =pop[["id_municipio", "populacao"]].merge(
-        pib[["id_municipio", "pib_per_capita", "part_agropecuaria", "part_industria", "part_servicos"]],
-        on="id_municipio", how="outer",
-    )
+    pop = pop_all[pop_all["ano"] <= ano_limite].sort_values("ano").groupby("id_municipio").tail(1)
+
+    # PIB per capita: ultimo ano com PIB, dividido pela populacao do mesmo ano (PIB em R$)
+    pib_pc = pib.dropna(subset=["pib"]).sort_values("ano").groupby("id_municipio").tail(1)
+    pib_pc = pib_pc.merge(pop_all, on=["id_municipio", "ano"], how="left")
+    pib_pc["pib_per_capita"] = pib_pc["pib"] / pib_pc["populacao"]
+
+    # composicao da economia: ultimo ano em que o IBGE publicou o valor adicionado
+    # por setor (o ano mais recente da tabela costuma vir so com o PIB total)
+    va = pib.dropna(subset=va_cols).sort_values("ano").groupby("id_municipio").tail(1).copy()
+    va_total = va[va_cols].sum(axis=1).replace(0, np.nan)
+    for setor in ("agropecuaria", "industria", "servicos"):
+        va[f"part_{setor}"] = va[f"va_{setor}"] / va_total
+
+    saida = (pop[["id_municipio", "populacao"]]
+             .merge(pib_pc[["id_municipio", "pib_per_capita"]], on="id_municipio", how="outer")
+             .merge(va[["id_municipio", "part_agropecuaria", "part_industria", "part_servicos"]],
+                    on="id_municipio", how="outer"))
     saida["log_populacao"] = np.log10(saida["populacao"])
     return saida.drop(columns="populacao")
 
